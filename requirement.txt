@@ -3,3 +3,4 @@ python-dotenv
 cubescrambler
 magiccube
 pillow
+resvg-py

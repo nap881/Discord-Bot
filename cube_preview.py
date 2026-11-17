@@ -51,3 +51,56 @@ def render_cube_2d(scramble: str, size: int = 3, cell_size: int = 24, border: in
     img.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+import os
+import subprocess
+import resvg_py
+
+CSTIMER_TYPES = {
+    "pyra": "pyrm",
+    "pyraminx": "pyrm",
+    "mega": "mgmp",
+    "megaminx": "mgmp",
+    "skewb": "skb",
+    "sq1": "sq1",
+    "square1": "sq1",
+    "square-1": "sq1",
+    "clock": "clkwca",
+}
+
+RENDER_SCRIPT = os.path.join(os.path.dirname(__file__), "render_svg.js")
+
+def render_svg_preview(scramble: str, puzzle_type: str) -> io.BytesIO | None:
+    cstype = CSTIMER_TYPES.get(puzzle_type.lower())
+    if not cstype:
+        return None
+    try:
+        res = subprocess.run(
+            ["node", RENDER_SCRIPT, scramble, cstype],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if not res.stdout:
+            return None
+        png_bytes = resvg_py.svg_to_bytes(res.stdout)
+        img = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
+
+        padding = 12
+        bg = Image.new("RGBA", (img.width + padding * 2, img.height + padding * 2), (32, 34, 37, 255))
+        bg.paste(img, (padding, padding), img)
+
+        buf = io.BytesIO()
+        bg.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+def render_preview(scramble: str, puzzle_key: str, size: int | None = None) -> io.BytesIO | None:
+    if size is not None:
+        try:
+            return render_cube_2d(scramble, size=size)
+        except Exception:
+            pass
+    return render_svg_preview(scramble, puzzle_key)

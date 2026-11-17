@@ -3,9 +3,21 @@ import logging
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+import dukpy
 import cubescrambler
-from cubescrambler import scrambler222, scrambler333, scrambler444, scrambler555
-from cube_preview import render_cube_2d
+from cubescrambler import (
+    scrambler222,
+    scrambler333,
+    scrambler444,
+    scrambler555,
+    scrambler666,
+    scrambler777,
+    pyraminxScrambler,
+    skewbScrambler,
+    squareOneScrambler,
+    clockScrambler,
+)
+from cube_preview import render_cube_2d, render_preview
 from wca_calc import calculate_ao, parse_time, format_time
 from room import rooms, create_room, find_player_room, get_user_room
 
@@ -23,6 +35,9 @@ scrambler444.file_list = [
     cubescrambler.MEGA_SCRAMBLE_SRC,
 ]
 
+def get_megaminx_scramble():
+    return dukpy.evaljs([cubescrambler.MATHLIB_SRC, cubescrambler.SCRAMBLE_SRC, cubescrambler.UTIL_SCRAMBLE_SRC], scrambleType='wcamega', n=70).strip()
+
 load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 token = os.getenv("DISCORD_TOKEN")
 
@@ -35,12 +50,28 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 CUBE_MAP = {
     "22": ("2x2", 2, scrambler222.get_WCA_scramble),
+    "222": ("2x2", 2, scrambler222.get_WCA_scramble),
     "33": ("3x3", 3, scrambler333.get_WCA_scramble),
+    "333": ("3x3", 3, scrambler333.get_WCA_scramble),
     "44": ("4x4", 4, scrambler444.get_random_state_scramble),
+    "444": ("4x4", 4, scrambler444.get_random_state_scramble),
     "55": ("5x5", 5, scrambler555.get_WCA_scramble),
+    "555": ("5x5", 5, scrambler555.get_WCA_scramble),
+    "66": ("6x6", 6, scrambler666.get_WCA_scramble),
+    "666": ("6x6", 6, scrambler666.get_WCA_scramble),
+    "77": ("7x7", 7, scrambler777.get_WCA_scramble),
+    "777": ("7x7", 7, scrambler777.get_WCA_scramble),
+    "pyra": ("Pyraminx", None, pyraminxScrambler.get_WCA_scramble),
+    "pyraminx": ("Pyraminx", None, pyraminxScrambler.get_WCA_scramble),
+    "mega": ("Megaminx", None, get_megaminx_scramble),
+    "megaminx": ("Megaminx", None, get_megaminx_scramble),
+    "skewb": ("Skewb", None, skewbScrambler.get_WCA_scramble),
+    "sq1": ("Square-1", None, squareOneScrambler.get_WCA_scramble),
+    "square1": ("Square-1", None, squareOneScrambler.get_WCA_scramble),
+    "clock": ("Clock", None, clockScrambler.get_WCA_scramble),
 }
 
-async def handle_scramble_command(ctx, cube_name: str, size: int, scramble_fn, count: int = 1):
+async def handle_scramble_command(ctx, cube_name: str, size, scramble_fn, count: int = 1):
     if count < 1:
         await ctx.send("Please specify at least 1 scramble.")
         return
@@ -50,17 +81,20 @@ async def handle_scramble_command(ctx, cube_name: str, size: int, scramble_fn, c
 
     if count == 1:
         scramble = scramble_fn()
-        img_buffer = render_cube_2d(scramble, size=size)
-        file = discord.File(img_buffer, filename="scramble.png")
-
         embed = discord.Embed(
             title=f"{cube_name} Scramble",
             description=f"```\n{scramble}\n```",
             color=discord.Color.blue()
         )
-        embed.set_image(url="attachment://scramble.png")
         embed.set_footer(text=f"Requested by {ctx.author.display_name}")
-        await ctx.send(file=file, embed=embed)
+
+        img_buffer = render_preview(scramble, cube_name, size=size)
+        if img_buffer:
+            file = discord.File(img_buffer, filename="scramble.png")
+            embed.set_image(url="attachment://scramble.png")
+            await ctx.send(file=file, embed=embed)
+        else:
+            await ctx.send(embed=embed)
     else:
         scrambles = [scramble_fn() for _ in range(count)]
         lines = [f"{i}. {sc}" for i, sc in enumerate(scrambles, 1)]
@@ -101,15 +135,18 @@ async def advance_room(channel, code, room):
     else:
         scramble = room.scrambles[room.current_round]
         cube_name, size, _ = CUBE_MAP[room.cube_type]
-        img_buffer = render_cube_2d(scramble, size=size)
-        file = discord.File(img_buffer, filename="scramble.png")
         embed = discord.Embed(
             title=f"Room {code} — Round {room.current_round + 1}/{room.rounds}",
             description=f"**Round {room.current_round} Results:**\n{result_text}\n\n**Next Scramble:**\n```\n{scramble}\n```\n\nType your time in chat",
             color=discord.Color.blue()
         )
-        embed.set_image(url="attachment://scramble.png")
-        await channel.send(file=file, embed=embed)
+        img_buffer = render_preview(scramble, room.cube_type, size=size)
+        if img_buffer:
+            file = discord.File(img_buffer, filename="scramble.png")
+            embed.set_image(url="attachment://scramble.png")
+            await channel.send(file=file, embed=embed)
+        else:
+            await channel.send(embed=embed)
 
 @bot.event
 async def on_message(message):
@@ -134,26 +171,61 @@ async def on_message(message):
 async def test(ctx):
     await ctx.send('this is a test')
 
-@bot.command(name="22")
+@bot.command(name="22", aliases=["222"])
 async def scramble_22(ctx, count: int = 1):
     await handle_scramble_command(ctx, "2x2", 2, scrambler222.get_WCA_scramble, count)
 
-@bot.command(name="33")
+@bot.command(name="33", aliases=["333"])
 async def scramble_33(ctx, count: int = 1):
     await handle_scramble_command(ctx, "3x3", 3, scrambler333.get_WCA_scramble, count)
 
-@bot.command(name="44")
+@bot.command(name="44", aliases=["444"])
 async def scramble_44(ctx, count: int = 1):
     await handle_scramble_command(ctx, "4x4", 4, scrambler444.get_random_state_scramble, count)
 
-@bot.command(name="55")
+@bot.command(name="55", aliases=["555"])
 async def scramble_55(ctx, count: int = 1):
     await handle_scramble_command(ctx, "5x5", 5, scrambler555.get_WCA_scramble, count)
+
+@bot.command(name="66", aliases=["666"])
+async def scramble_66(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "6x6", 6, scrambler666.get_WCA_scramble, count)
+
+@bot.command(name="77", aliases=["777"])
+async def scramble_77(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "7x7", 7, scrambler777.get_WCA_scramble, count)
+
+@bot.command(name="pyra", aliases=["pyraminx"])
+async def scramble_pyra(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "Pyraminx", None, pyraminxScrambler.get_WCA_scramble, count)
+
+@bot.command(name="mega", aliases=["megaminx"])
+async def scramble_mega(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "Megaminx", None, get_megaminx_scramble, count)
+
+@bot.command(name="skewb")
+async def scramble_skewb(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "Skewb", None, skewbScrambler.get_WCA_scramble, count)
+
+@bot.command(name="sq1", aliases=["square1"])
+async def scramble_sq1(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "Square-1", None, squareOneScrambler.get_WCA_scramble, count)
+
+@bot.command(name="clock")
+async def scramble_clock(ctx, count: int = 1):
+    await handle_scramble_command(ctx, "Clock", None, clockScrambler.get_WCA_scramble, count)
 
 @scramble_22.error
 @scramble_33.error
 @scramble_44.error
 @scramble_55.error
+@scramble_66.error
+@scramble_77.error
+@scramble_pyra.error
+@scramble_mega.error
+@scramble_skewb.error
+@scramble_sq1.error
+@scramble_clock.error
 async def scramble_error(ctx, error):
     if isinstance(error, commands.BadArgument):
         await ctx.send("Please specify a valid number (e.g. `!33` or `!33 5`).")
@@ -198,7 +270,7 @@ async def cmd_ao(ctx, *, times: str = ""):
     else:
         await ctx.send(f"Provided {len(tokens)} times. Please provide either **5** times for Ao5 or **12** times for Ao12.")
 
-@bot.command(name="room")
+@bot.command(name="room", aliases=["create"])
 async def cmd_room(ctx, cube: str = None, rounds: int = None):
     existing_code, existing_room = get_user_room(ctx.author.id)
     if existing_room is not None:
@@ -207,10 +279,11 @@ async def cmd_room(ctx, cube: str = None, rounds: int = None):
         return
 
     if cube is None or rounds is None:
-        await ctx.send("Usage: `!room <cube> <rounds>` (e.g. `!room 33 5`)")
+        await ctx.send("Usage: `!room <puzzle> <rounds>` (e.g. `!room 33 5`)\nPuzzles: `22`, `33`, `44`, `55`, `66`, `77`, `pyra`, `mega`, `skewb`, `sq1`, `clock`")
         return
+    cube = cube.lower()
     if cube not in CUBE_MAP:
-        await ctx.send("Invalid cube type. Use `22`, `33`, `44`, or `55`.")
+        await ctx.send("Invalid puzzle. Choose from: `22`, `33`, `44`, `55`, `66`, `77`, `pyra`, `mega`, `skewb`, `sq1`, `clock`.")
         return
     if rounds < 1 or rounds > 50:
         await ctx.send("Rounds must be between 1 and 50.")
@@ -276,24 +349,22 @@ async def cmd_start(ctx):
         await ctx.send("You don't have a room to start in this channel.")
         return
 
-    if len(target_room.players) < 2:
-        await ctx.send("You need at least 2 players to start.")
-        return
-
     target_room.start()
     scramble = target_room.scrambles[0]
     cube_name, size, _ = CUBE_MAP[target_room.cube_type]
-    img_buffer = render_cube_2d(scramble, size=size)
-    file = discord.File(img_buffer, filename="scramble.png")
-
     player_list = ", ".join(target_room.players.values())
     embed = discord.Embed(
         title=f"Room {target_code} — Round 1/{target_room.rounds}",
         description=f"**Players:** {player_list}\n\n**Scramble:**\n```\n{scramble}\n```\n\nType your time in chat (e.g. `12.34`, `1:05.23`, `DNF`)",
         color=discord.Color.green()
     )
-    embed.set_image(url="attachment://scramble.png")
-    await ctx.send(file=file, embed=embed)
+    img_buffer = render_preview(scramble, target_room.cube_type, size=size)
+    if img_buffer:
+        file = discord.File(img_buffer, filename="scramble.png")
+        embed.set_image(url="attachment://scramble.png")
+        await ctx.send(file=file, embed=embed)
+    else:
+        await ctx.send(embed=embed)
 
 @bot.command(name="next")
 async def cmd_next(ctx):
