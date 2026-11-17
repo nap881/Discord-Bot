@@ -7,7 +7,7 @@ import cubescrambler
 from cubescrambler import scrambler222, scrambler333, scrambler444, scrambler555
 from cube_preview import render_cube_2d
 from wca_calc import calculate_ao, parse_time, format_time
-from room import rooms, create_room, find_player_room
+from room import rooms, create_room, find_player_room, get_user_room
 
 scrambler333.file_list = [
     cubescrambler.MATHLIB_SRC,
@@ -78,6 +78,39 @@ async def handle_scramble_command(ctx, cube_name: str, size: int, scramble_fn, c
 async def on_ready():
     print(f"Bot is ready as {bot.user.name}")
 
+async def advance_room(channel, code, room):
+    finished = room.advance_round()
+    results = room.round_results(room.current_round - 1)
+    result_text = "\n".join(results)
+
+    if finished:
+        lb = room.leaderboard()
+        avg_type = "Mean" if room.rounds < 5 else "Average"
+        lb_lines = [
+            f"{'>' if i == 0 else ' '} **{i+1}.** {name} — {format_time(avg)}"
+            for i, (uid, name, avg) in enumerate(lb)
+        ]
+        embed = discord.Embed(
+            title=f"Room {code} — Final Results",
+            description=f"**Round {room.current_round} Results:**\n{result_text}\n\n**Leaderboard ({avg_type}):**\n" + "\n".join(lb_lines),
+            color=discord.Color.gold()
+        )
+        await channel.send(embed=embed)
+        if code in rooms:
+            del rooms[code]
+    else:
+        scramble = room.scrambles[room.current_round]
+        cube_name, size, _ = CUBE_MAP[room.cube_type]
+        img_buffer = render_cube_2d(scramble, size=size)
+        file = discord.File(img_buffer, filename="scramble.png")
+        embed = discord.Embed(
+            title=f"Room {code} — Round {room.current_round + 1}/{room.rounds}",
+            description=f"**Round {room.current_round} Results:**\n{result_text}\n\n**Next Scramble:**\n```\n{scramble}\n```\n\nType your time in chat",
+            color=discord.Color.blue()
+        )
+        embed.set_image(url="attachment://scramble.png")
+        await channel.send(file=file, embed=embed)
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -93,36 +126,7 @@ async def on_message(message):
         if ok:
             await message.add_reaction("\u2705")
             if room.all_submitted():
-                finished = room.advance_round()
-                results = room.round_results(room.current_round - 1)
-                result_text = "\n".join(results)
-
-                if finished:
-                    lb = room.leaderboard()
-                    avg_type = "Mean" if room.rounds < 5 else "Average"
-                    lb_lines = [
-                        f"{'>' if i == 0 else ' '} **{i+1}.** {name} — {format_time(avg)}"
-                        for i, (uid, name, avg) in enumerate(lb)
-                    ]
-                    embed = discord.Embed(
-                        title=f"Room {code} — Final Results",
-                        description=f"**Round {room.current_round} Results:**\n{result_text}\n\n**Leaderboard ({avg_type}):**\n" + "\n".join(lb_lines),
-                        color=discord.Color.gold()
-                    )
-                    await message.channel.send(embed=embed)
-                    del rooms[code]
-                else:
-                    scramble = room.scrambles[room.current_round]
-                    cube_name, size, _ = CUBE_MAP[room.cube_type]
-                    img_buffer = render_cube_2d(scramble, size=size)
-                    file = discord.File(img_buffer, filename="scramble.png")
-                    embed = discord.Embed(
-                        title=f"Room {code} — Round {room.current_round + 1}/{room.rounds}",
-                        description=f"**Round {room.current_round} Results:**\n{result_text}\n\n**Next Scramble:**\n```\n{scramble}\n```",
-                        color=discord.Color.blue()
-                    )
-                    embed.set_image(url="attachment://scramble.png")
-                    await message.channel.send(file=file, embed=embed)
+                await advance_room(message.channel, code, room)
 
     await bot.process_commands(message)
 
@@ -196,6 +200,12 @@ async def cmd_ao(ctx, *, times: str = ""):
 
 @bot.command(name="room")
 async def cmd_room(ctx, cube: str = None, rounds: int = None):
+    existing_code, existing_room = get_user_room(ctx.author.id)
+    if existing_room is not None:
+        role = "hosting" if existing_room.host_id == ctx.author.id else "attending"
+        await ctx.send(f"You are already {role} Room `{existing_code}`. You cannot create a new room.")
+        return
+
     if cube is None or rounds is None:
         await ctx.send("Usage: `!room <cube> <rounds>` (e.g. `!room 33 5`)")
         return
@@ -226,12 +236,19 @@ async def cmd_join(ctx, code: str = None):
     if code not in rooms:
         await ctx.send("Room not found.")
         return
+
+    existing_code, existing_room = get_user_room(ctx.author.id)
+    if existing_room is not None:
+        if existing_code == code:
+            await ctx.send("You are already in this room.")
+        else:
+            role = "hosting" if existing_room.host_id == ctx.author.id else "attending"
+            await ctx.send(f"You are already {role} Room `{existing_code}`. You must leave it before joining another.")
+        return
+
     room = rooms[code]
     if room.state != "waiting":
         await ctx.send("This room has already started.")
-        return
-    if ctx.author.id in room.players:
-        await ctx.send("You are already in this room.")
         return
 
     room.add_player(ctx.author.id, ctx.author.display_name)
@@ -292,35 +309,47 @@ async def cmd_next(ctx):
         await ctx.send("You don't have an active room in this channel.")
         return
 
-    finished = target_room.advance_round()
-    results = target_room.round_results(target_room.current_round - 1)
-    result_text = "\n".join(results)
+    await advance_room(ctx.channel, target_code, target_room)
 
-    if finished:
-        lb = target_room.leaderboard()
-        avg_type = "Mean" if target_room.rounds < 5 else "Average"
-        lb_lines = [
-            f"{'>' if i == 0 else ' '} **{i+1}.** {name} — {format_time(avg)}"
-            for i, (uid, name, avg) in enumerate(lb)
-        ]
-        embed = discord.Embed(
-            title=f"Room {target_code} — Final Results",
-            description=f"**Round {target_room.current_round} Results:**\n{result_text}\n\n**Leaderboard ({avg_type}):**\n" + "\n".join(lb_lines),
-            color=discord.Color.gold()
-        )
-        await ctx.send(embed=embed)
+@bot.command(name="leave")
+async def cmd_leave(ctx):
+    target_code, target_room = get_user_room(ctx.author.id)
+    if target_room is None:
+        await ctx.send("You are not currently in any room.")
+        return
+
+    if target_room.host_id == ctx.author.id:
         del rooms[target_code]
+        await ctx.send(f"Room `{target_code}` has been disbanded by the host.")
     else:
-        scramble = target_room.scrambles[target_room.current_round]
-        cube_name, size, _ = CUBE_MAP[target_room.cube_type]
-        img_buffer = render_cube_2d(scramble, size=size)
-        file = discord.File(img_buffer, filename="scramble.png")
-        embed = discord.Embed(
-            title=f"Room {target_code} — Round {target_room.current_round + 1}/{target_room.rounds}",
-            description=f"**Round {target_room.current_round} Results:**\n{result_text}\n\n**Next Scramble:**\n```\n{scramble}\n```\n\nType your time in chat",
-            color=discord.Color.blue()
+        target_room.remove_player(ctx.author.id)
+        await ctx.send(f"{ctx.author.display_name} has left Room `{target_code}`.")
+        if len(target_room.players) == 0:
+            del rooms[target_code]
+            await ctx.send(f"No players left in Room `{target_code}`. Room has been disbanded.")
+        elif target_room.state == "active" and target_room.all_submitted():
+            channel = bot.get_channel(target_room.channel_id) or ctx.channel
+            await advance_room(channel, target_code, target_room)
+
+@bot.command(name="rooms")
+async def cmd_rooms(ctx):
+    if not rooms:
+        await ctx.send("No active rooms right now.")
+        return
+
+    embed = discord.Embed(
+        title="Active Rooms",
+        color=discord.Color.blue()
+    )
+    for code, room in rooms.items():
+        cube_name = CUBE_MAP[room.cube_type][0]
+        status = f"Round {room.current_round + 1}/{room.rounds}" if room.state == "active" else "Waiting for players"
+        player_names = ", ".join(room.players.values())
+        embed.add_field(
+            name=f"Room {code} ({cube_name})",
+            value=f"**Status:** {status}\n**Players ({len(room.players)}):** {player_names}",
+            inline=False
         )
-        embed.set_image(url="attachment://scramble.png")
-        await ctx.send(file=file, embed=embed)
+    await ctx.send(embed=embed)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)

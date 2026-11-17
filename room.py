@@ -24,6 +24,12 @@ class Room:
         if user_id not in self.players:
             self.players[user_id] = display_name
 
+    def remove_player(self, user_id):
+        if user_id in self.players:
+            del self.players[user_id]
+        if user_id in self.times:
+            del self.times[user_id]
+
     def start(self):
         self.state = "active"
         self.scrambles = [self.scramble_fn() for _ in range(self.rounds)]
@@ -45,6 +51,8 @@ class Room:
         return True, format_time(parsed)
 
     def all_submitted(self):
+        if not self.players:
+            return False
         return all(
             self.times[uid][self.current_round] is not None
             for uid in self.players
@@ -104,6 +112,13 @@ def create_room(host_id, channel_id, cube_type, rounds, scramble_fn):
 def find_player_room(channel_id, user_id):
     for code, room in rooms.items():
         if room.channel_id == channel_id and user_id in room.players and room.state == "active":
+            return code, room
+    return None, None
+
+
+def get_user_room(user_id):
+    for code, room in rooms.items():
+        if user_id == room.host_id or user_id in room.players:
             return code, room
     return None, None
 
