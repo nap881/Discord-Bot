@@ -4,3 +4,4 @@ cubescrambler
 magiccube
 pillow
 resvg-py
+google-genai

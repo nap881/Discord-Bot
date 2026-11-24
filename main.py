@@ -3,6 +3,8 @@ import logging
 import discord
 from discord.ext import commands
 from dotenv import load_dotenv
+from google import genai
+from google.genai import types
 import dukpy
 import cubescrambler
 from cubescrambler import (
@@ -46,7 +48,7 @@ intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 CUBE_MAP = {
     "22": ("2x2", 2, scrambler222.get_WCA_scramble),
@@ -151,6 +153,36 @@ async def advance_room(channel, code, room):
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
+        return
+
+    if (bot.user in message.mentions or isinstance(message.channel, discord.DMChannel)) and not message.mention_everyone and not message.content.startswith("!"):
+        prompt = message.content.replace(f"<@{bot.user.id}>", "").replace(f"<@!{bot.user.id}>", "").strip()
+
+        if not prompt:
+            await message.reply("How can I help you?")
+            return
+
+        load_dotenv(os.path.join(os.path.dirname(__file__), '.env'), override=True)
+        key = os.getenv("GEMINI_API_KEY")
+        if not key or not key.strip():
+            return
+
+        client = genai.Client(api_key=key.strip())
+        async with message.channel.typing():
+            try:
+                response = await client.aio.models.generate_content(
+                    model="gemini-3.5-flash-lite",
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        system_instruction="You are a helpful speedcubing discord assistant. Keep answers concise. Never generate your own scrambles or calculate WCA averages yourself—always prompt the user to use the bot's built-in commands and !help. Never hallucinate/mention and command that you don't know."
+                    )
+                )
+                reply_text = response.text or ""
+                for i in range(0, len(reply_text), 2000):
+                    await message.reply(reply_text[i:i+2000])
+            except Exception as e:
+                print(f"Bot error: {e}")
+                await message.reply(f"Error: `{e}`")
         return
 
     if message.content.lower() in ["hello", "hi", "sup"]:
@@ -421,6 +453,57 @@ async def cmd_rooms(ctx):
             value=f"**Status:** {status}\n**Players ({len(room.players)}):** {player_names}",
             inline=False
         )
+    await ctx.send(embed=embed)
+
+@bot.command(name="help")
+async def cmd_help(ctx):
+    embed = discord.Embed(
+        title="Speedcubing Bot Commands",
+        description="Here are all the available commands:",
+        color=discord.Color.blue()
+    )
+    embed.add_field(
+        name="Scrambles",
+        value=(
+            "`!22 [n]` — 2x2x2 Cube\n"
+            "`!33 [n]` — 3x3x3 Cube\n"
+            "`!44 [n]` — 4x4x4 Cube\n"
+            "`!55 [n]` — 5x5x5 Cube\n"
+            "`!66 [n]` — 6x6x6 Cube\n"
+            "`!77 [n]` — 7x7x7 Cube\n"
+            "`!pyra [n]` — Pyraminx\n"
+            "`!mega [n]` — Megaminx\n"
+            "`!skewb [n]` — Skewb\n"
+            "`!sq1 [n]` — Square-1\n"
+            "`!clock [n]` — Clock\n"
+            "*(Optional [n] generates 1–12 scrambles. Single scrambles include image preview.)*"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="WCA Averages",
+        value=(
+            "`!ao5 <5 times>` — Calculate Ao5\n"
+            "`!ao12 <12 times>` — Calculate Ao12\n"
+            "`!ao <5 or 12 times>` — Auto-detect Ao5 / Ao12\n"
+            "*(Supports DNF/DNS and mm:ss.xx format)*"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="Multiplayer Rooms",
+        value=(
+            "`!create <puzzle> <rounds>` — Create a room (e.g. `!create 33 5`)\n"
+            "`!join <code>` — Join a room by 6-digit code\n"
+            "`!start` — Host starts the room\n"
+            "`!next` — Host skips to next round (missing times become DNF)\n"
+            "`!leave` — Leave room (host typing !leave disbands the room)\n"
+            "`!rooms` — List all active rooms\n"
+            "*(During a round, type your solve time directly in chat)*"
+        ),
+        inline=False
+    )
+    embed.set_footer(text="Speedcubing Bot")
     await ctx.send(embed=embed)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
