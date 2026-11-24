@@ -5,3 +5,4 @@ magiccube
 pillow
 resvg-py
 google-genai
+cryptography

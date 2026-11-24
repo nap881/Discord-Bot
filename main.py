@@ -24,6 +24,7 @@ from cubescrambler import (
 from cube_preview import render_cube_2d, render_preview
 from wca_calc import calculate_ao, parse_time, format_time
 from room import rooms, create_room, find_player_room, get_user_room
+import db_manager
 
 scrambler333.file_list = [
     cubescrambler.MATHLIB_SRC,
@@ -191,7 +192,15 @@ async def do_ao_auto(target, user_display_name: str, raw_times: str):
 
 async def advance_room(channel, code, room):
     finished = room.advance_round()
-    results = room.round_results(room.current_round - 1)
+    round_idx = room.current_round - 1
+    scramble = room.scrambles[round_idx]
+
+    # Record solves in JSON database for PBs & Global averages
+    for uid, name in room.players.items():
+        t = room.times[uid][round_idx]
+        await db_manager.record_solve(uid, name, room.cube_type, t, scramble)
+
+    results = room.round_results(round_idx)
     result_text = "\n".join(results)
 
     if finished:
@@ -429,13 +438,21 @@ def build_help_embed():
     embed.add_field(
         name="Multiplayer Rooms",
         value=(
-            "`!create` or `/create <puzzle> <rounds>` — Create a room (e.g. `33 5`)\n"
+            "`!create` (or `/create`, `/room`) `<puzzle> <rounds>` — Create a room (e.g. `33 5`)\n"
             "`!join` or `/join <code>` — Join a room by 6-digit code\n"
             "`!start` or `/start` — Host starts the room\n"
             "`!next` or `/next` — Host skips to next round (missing times become DNF)\n"
             "`!leave` or `/leave` — Leave room (host leaves to disband)\n"
             "`!rooms` or `/rooms` — List all active rooms\n"
-            "`/submit <time>` — Enter your solve time (required during rounds)"
+            "`/submit <time>` — Privately enter your solve time during rounds"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="Statistics",
+        value=(
+            "`!stat <puzzle>` or `/stat <puzzle>` (or `!stats`, `/stats`) — Display your personal PB single, global average, and solve count\n"
+            "*(Puzzles: `22`, `33`, `44`, `55`, `66`, `77`, `pyra`, `mega`, `skewb`, `sq1`, `clock`)*"
         ),
         inline=False
     )
@@ -451,6 +468,45 @@ async def do_help(target):
     if isinstance(target, discord.Interaction) and not target.response.is_done():
         await target.response.defer()
     embed = build_help_embed()
+    await reply_embed_file(target, embed)
+
+async def do_stat(target, user, puzzle: str):
+    if isinstance(target, discord.Interaction) and not target.response.is_done():
+        await target.response.defer()
+
+    if not puzzle:
+        await reply_text(target, "Please specify a puzzle name (e.g. `!stat 33` or `/stat 33`).\nPuzzles: `22`, `33`, `44`, `55`, `66`, `77`, `pyra`, `mega`, `skewb`, `sq1`, `clock`")
+        return
+
+    norm_puzzle = db_manager.normalize_puzzle(puzzle)
+    if norm_puzzle not in db_manager.PUZZLE_NAMES:
+        await reply_text(target, f"Unknown puzzle '{puzzle}'. Choose from: `22`, `33`, `44`, `55`, `66`, `77`, `pyra`, `mega`, `skewb`, `sq1`, `clock`.")
+        return
+
+    puzzle_name = db_manager.PUZZLE_NAMES[norm_puzzle]
+    user_data = await db_manager.get_user_puzzle_stats(user.id, norm_puzzle)
+
+    if not user_data or user_data["total_solves"] == 0:
+        await reply_text(target, f"No solves recorded for **{user.display_name}** on **{puzzle_name}** yet. Complete a room round with `!create {norm_puzzle} <rounds>` to start tracking!")
+        return
+
+    pb_str = format_time(user_data['pb_single']) if user_data['pb_single'] is not None else "DNF"
+    avg_str = format_time(user_data['global_average']) if user_data['global_average'] is not None else "N/A"
+    dnf_count = user_data["total_solves"] - user_data["valid_solves"]
+
+    embed = discord.Embed(
+        title=f"{user.display_name}'s {puzzle_name} Statistics",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="PB Single", value=f"**{pb_str}**", inline=True)
+    embed.add_field(name="Global Average", value=f"**{avg_str}**", inline=True)
+    embed.add_field(name="Total Solves", value=f"{user_data['total_solves']} ({user_data['valid_solves']} valid, {dnf_count} DNF)", inline=True)
+
+    if user_data.get("pb_single_scramble"):
+        embed.add_field(name="PB Scramble", value=f"```{user_data['pb_single_scramble']}```", inline=False)
+    if user_data.get("pb_single_date"):
+        embed.set_footer(text=f"PB achieved on {user_data['pb_single_date']}")
+
     await reply_embed_file(target, embed)
 
 @bot.event
@@ -507,9 +563,6 @@ async def on_message(message):
 
     await bot.process_commands(message)
 
-# =========================
-# PREFIX COMMANDS (!)
-# =========================
 
 @bot.command()
 async def test(ctx):
@@ -614,9 +667,10 @@ async def cmd_rooms(ctx):
 async def cmd_help(ctx):
     await do_help(ctx)
 
-# =========================
-# SLASH COMMANDS (/)
-# =========================
+@bot.command(name="stat", aliases=["stats"])
+async def cmd_stat(ctx, puzzle: str = None):
+    await do_stat(ctx, ctx.author, puzzle)
+
 
 @bot.tree.command(name="submit", description="Submit your solve time for the current round")
 @app_commands.describe(time="Your solve time (e.g. 12.34, 1:05.23, DNF, DNS)")
@@ -754,5 +808,17 @@ async def slash_rooms(interaction: discord.Interaction):
 @bot.tree.command(name="help", description="Show all available speedcubing bot commands")
 async def slash_help(interaction: discord.Interaction):
     await do_help(interaction)
+
+@bot.tree.command(name="stat", description="Display personal PB, global average, and solve count for a puzzle")
+@app_commands.describe(puzzle="Puzzle to display statistics for")
+@app_commands.choices(puzzle=PUZZLE_CHOICES)
+async def slash_stat(interaction: discord.Interaction, puzzle: app_commands.Choice[str]):
+    await do_stat(interaction, interaction.user, puzzle.value)
+
+@bot.tree.command(name="stats", description="Display personal PB, global average, and solve count (alias for /stat)")
+@app_commands.describe(puzzle="Puzzle to display statistics for")
+@app_commands.choices(puzzle=PUZZLE_CHOICES)
+async def slash_stats(interaction: discord.Interaction, puzzle: app_commands.Choice[str]):
+    await do_stat(interaction, interaction.user, puzzle.value)
 
 bot.run(token, log_handler=handler, log_level=logging.DEBUG)
